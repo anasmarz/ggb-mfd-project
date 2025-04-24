@@ -74,17 +74,19 @@ const filterExcelData = (excelData, releases) => {
     .sort((a, b) => (a.kumpulanKategori).localeCompare(b.kumpulanKategori));
 };
 
-const readExcel = async () => {
-  const promise = new Promise(async (resolve, reject) => {
-    try {
-      const data = await fetchAllData();
-      const reconData = restructureJSON(data);
-      resolve(reconData);
-    } catch (error) {
-      reject(error);
-    }
-  });
-  return promise;
+// Create an object with a method that returns a promise
+const readExcel = {
+  getData: function() {
+    return new Promise(async (resolve, reject) => {
+      try {
+        const data = await fetchAllData();
+        const reconData = restructureJSON(data);
+        resolve(reconData);
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
 };
 
-export default readExcel();
+export default readExcel;

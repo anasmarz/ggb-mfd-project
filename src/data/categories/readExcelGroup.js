@@ -107,4 +107,5 @@ const readExcelGroup = async () => {
   return promise;
 };
 
-export default readExcelGroup();
+// Export the function instead of its result
+export default readExcelGroup;

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Card, CardBody, Col } from "shards-react";
+import { Card, CardBody, Row, Col } from "shards-react";
 import { useTranslation } from "react-i18next";
 import { HashLink } from 'react-router-hash-link';
 import styled, { keyframes } from 'styled-components';
