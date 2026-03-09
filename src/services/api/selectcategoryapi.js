@@ -5,13 +5,22 @@ import { Store } from "../../flux";
 const categoryCache = new Map();
 const categoryCacheTimestamps = new Map();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
-const ALLOWED_RELEASES = new Set(["Release 1", "Release 2", "Release 3"]);
 
 export { categoryCache, categoryCacheTimestamps };
 
 // Utility functions
 const formatString = (str) => Store.formatString(str);
-const capitalizeFirst = (str) => str.charAt(0).toUpperCase() + str.slice(1);
+
+// Selective field population — avoids fetching unused relation data
+const FIELD_PARAMS =
+  "fields[0]=Word&fields[1]=Perkataan&fields[2]=Video&fields[3]=Tag&fields[4]=New&fields[5]=Order&fields[6]=Image_Status" +
+  "&populate[category_group][fields][0]=KumpulanKategori&populate[category_group][fields][1]=GroupCategory";
+
+const BASE_URL = "https://bimsignbank-strapi.onrender.com/api/bims";
+
+// In-flight request deduplication — prevents parallel components from
+// firing the same API call simultaneously
+const inFlightRequests = new Map();
 
 // Reusable transformer for vocab items
 const transformVocabItem = (item) => ({
@@ -21,9 +30,7 @@ const transformVocabItem = (item) => ({
   perkataan: item.Perkataan || '',
   video: item.Video || '',
   tag: item.Tag || '',
-  release: item.Release || '',
   new: item.New || 'No',
-  sotd: item.SOTD || '',
   order: item.Order || '',
   imgStatus: item.Image_Status || ''
 });
@@ -42,66 +49,39 @@ export const getCategoriesOfGroup = (group) => {
   return Store.getCategoriesOfGroup(group);
 };
 
-// Fetch vocabs by category from API
+// Normalise group/category strings coming from URL params or user input
+const normaliseParam = (str) =>
+  str
+    .replace(/-/g, ' ')
+    .replace(/-&-/g, ' & ')
+    .split(' ')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+
+// Fetch vocabs by category — single request replacing the while-loop
 export const fetchVocabsByCategoryFromAPI = async (group, category) => {
   if (!group || !category) return [];
 
   try {
-    // First, ensure we're working with properly formatted strings
-    // Replace any hyphens with spaces in the input parameters
-    const cleanGroup = group.replace(/-/g, ' ');
-    const cleanCategory = category.replace(/-/g, ' ');
-    
-    // Capitalize each word
-    const formattedGroup = cleanGroup.split(' ')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-      .join(' ');
-    
-    const formattedCategory = cleanCategory.split(' ')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-      .join(' ');
-    
-    // Replace any instances of "-&-" with " & "
-    const finalGroup = formattedGroup.replace(/-&-/g, ' & ');
-    const finalCategory = formattedCategory.replace(/-&-/g, ' & ');
-    
+    const finalGroup = normaliseParam(group);
+    const finalCategory = normaliseParam(category);
     const groupCategoryPair = `${finalGroup}/${finalCategory}`;
-    
+
     console.log(`Fetching vocabs for group/category: ${groupCategoryPair}`);
 
-    // Properly encode the URL parameter
     const encodedGroupCategoryPair = encodeURIComponent(groupCategoryPair);
-    
-    const PAGE_SIZE = 25;
-    let page = 1;
-    let allData = [];
-    let totalItems = 0;
 
-    while (true) {
-      const apiUrl = `https://mfd-final-test.onrender.com/api/bims?populate=*&filters[category_group][GroupCategory][$eq]=${encodedGroupCategoryPair}&pagination[page]=${page}&pagination[pageSize]=${PAGE_SIZE}`;
-      console.log(`API URL (Page ${page}): ${apiUrl}`);
+    const response = await axios.get(
+      `${BASE_URL}?${FIELD_PARAMS}&filters[category_group][GroupCategory][$eq]=${encodedGroupCategoryPair}&pagination[pageSize]=500`
+    );
 
-      const response = await axios.get(apiUrl);
-
-      const pageData = response.data?.data ?? [];
-      const meta = response.data?.meta?.pagination;
-
-      if (meta && page === 1) {
-        totalItems = meta.total;
-      }
-
-      allData = allData.concat(pageData);
-
-      if (!meta || allData.length >= totalItems) {
-        break;
-      }
-
-      page++;
+    if (!response.data?.data) {
+      console.error("Invalid API response structure:", response);
+      return [];
     }
 
-    const transformedData = allData
+    const transformedData = response.data.data
       .map(transformVocabItem)
-      .filter(item => ALLOWED_RELEASES.has(item.release))
       .sort((a, b) => {
         const aOrder = a.order ?? Infinity;
         const bOrder = b.order ?? Infinity;
@@ -116,13 +96,13 @@ export const fetchVocabsByCategoryFromAPI = async (group, category) => {
   }
 };
 
-// Fetch new signs from API
+// Fetch new signs — single targeted request
 export const fetchNewSignsFromAPI = async () => {
   try {
     console.log("Fetching new signs");
 
     const response = await axios.get(
-      `https://mfd-final-test.onrender.com/api/bims?populate=*&filters[New][$eq]=Yes`
+      `${BASE_URL}?${FIELD_PARAMS}&filters[New][$eq]=Yes&pagination[pageSize]=200`
     );
 
     if (!response.data?.data) {
@@ -130,17 +110,14 @@ export const fetchNewSignsFromAPI = async () => {
       return [];
     }
 
-    return response.data.data
-      .map(transformVocabItem)
-      .filter(item => ALLOWED_RELEASES.has(item.release) && item.new === "Yes");
-
+    return response.data.data.map(transformVocabItem);
   } catch (error) {
     console.error("Error fetching new signs:", error);
     return [];
   }
 };
 
-// Get vocabs by category with caching
+// Get vocabs by category with caching + request deduplication
 export const getVocabsByCategory = async (group, category) => {
   if (!group || !category) return [];
 
@@ -151,34 +128,47 @@ export const getVocabsByCategory = async (group, category) => {
   const cacheKey = `${formatString(group)}/${formatString(category)}`;
   const now = Date.now();
 
-  try {
-    if (
-      categoryCache.has(cacheKey) &&
-      categoryCacheTimestamps.has(cacheKey) &&
-      now - categoryCacheTimestamps.get(cacheKey) < CACHE_DURATION
-    ) {
-      console.log(`Using cached data for category: ${cacheKey}`);
-      return categoryCache.get(cacheKey);
-    }
-
-    console.log(`Cache miss for category: ${cacheKey}, fetching from API`);
-    const vocabs = await fetchVocabsByCategoryFromAPI(group, category);
-
-    categoryCache.set(cacheKey, vocabs);
-    categoryCacheTimestamps.set(cacheKey, now);
-
-    return vocabs;
-  } catch (error) {
-    console.error("Error in getVocabsByCategory:", error);
-
-    if (categoryCache.has(cacheKey)) {
-      console.log(`Using expired cache for category: ${cacheKey}`);
-      return categoryCache.get(cacheKey);
-    }
-
-    console.log("Falling back to Store data for category vocabs");
-    return Store.getVocabList(group, formatString(category));
+  // Return valid cache immediately
+  if (
+    categoryCache.has(cacheKey) &&
+    categoryCacheTimestamps.has(cacheKey) &&
+    now - categoryCacheTimestamps.get(cacheKey) < CACHE_DURATION
+  ) {
+    console.log(`Using cached data for category: ${cacheKey}`);
+    return categoryCache.get(cacheKey);
   }
+
+  // Deduplicate concurrent requests for the same category
+  if (inFlightRequests.has(cacheKey)) {
+    console.log(`Reusing in-flight request for category: ${cacheKey}`);
+    return inFlightRequests.get(cacheKey);
+  }
+
+  console.log(`Cache miss for category: ${cacheKey}, fetching from API`);
+
+  const requestPromise = fetchVocabsByCategoryFromAPI(group, category)
+    .then((vocabs) => {
+      categoryCache.set(cacheKey, vocabs);
+      categoryCacheTimestamps.set(cacheKey, Date.now());
+      return vocabs;
+    })
+    .catch((error) => {
+      console.error("Error in getVocabsByCategory:", error);
+
+      if (categoryCache.has(cacheKey)) {
+        console.log(`Using expired cache for category: ${cacheKey}`);
+        return categoryCache.get(cacheKey);
+      }
+
+      console.log("Falling back to Store data for category vocabs");
+      return Store.getVocabList(group, formatString(category));
+    })
+    .finally(() => {
+      inFlightRequests.delete(cacheKey);
+    });
+
+  inFlightRequests.set(cacheKey, requestPromise);
+  return requestPromise;
 };
 
 // Get new signs with caching
@@ -186,16 +176,16 @@ export const getNewSigns = async () => {
   const cacheKey = "new-signs";
   const now = Date.now();
 
-  try {
-    if (
-      categoryCache.has(cacheKey) &&
-      categoryCacheTimestamps.has(cacheKey) &&
-      now - categoryCacheTimestamps.get(cacheKey) < CACHE_DURATION
-    ) {
-      console.log("Using cached data for new signs");
-      return categoryCache.get(cacheKey);
-    }
+  if (
+    categoryCache.has(cacheKey) &&
+    categoryCacheTimestamps.has(cacheKey) &&
+    now - categoryCacheTimestamps.get(cacheKey) < CACHE_DURATION
+  ) {
+    console.log("Using cached data for new signs");
+    return categoryCache.get(cacheKey);
+  }
 
+  try {
     console.log("Cache miss for new signs, fetching from API");
     const newSigns = await fetchNewSignsFromAPI();
 

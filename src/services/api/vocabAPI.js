@@ -12,12 +12,19 @@ const capitalizeFirstLetter = (string) => {
   return string.charAt(0).toUpperCase() + string.slice(1);
 };
 
+// Selective field population — avoids fetching unused relation data
+const FIELD_PARAMS =
+  "fields[0]=Word&fields[1]=Perkataan&fields[2]=Video&fields[3]=Tag&fields[4]=New&fields[5]=Order&fields[6]=Image_Status" +
+  "&populate[category_group][fields][0]=KumpulanKategori&populate[category_group][fields][1]=GroupCategory";
+
+const BASE_URL = "https://bimsignbank-strapi.onrender.com/api/bims";
+
 // Cache setup
 const vocabCache = new Map();
 const vocabCacheTimestamps = new Map();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
-// Find vocab in alphabet cache
+// Find vocab in alphabet cache (avoids a network call entirely)
 const findVocabInAlphabetData = (vocabName) => {
   if (!vocabName) return null;
 
@@ -41,41 +48,40 @@ const findVocabInAlphabetData = (vocabName) => {
   return null;
 };
 
-// Fetch vocab from external API
+// Transform a raw Strapi item into the app's vocab shape
+const transformVocabItem = (item) => ({
+  kumpulanKategori: item.category_group?.KumpulanKategori || `${item.Kumpulan}/${item.Kategori}`,
+  groupCategory: item.category_group?.GroupCategory || `${item.Group}/${item.Category}`,
+  word: item.Word || '',
+  perkataan: item.Perkataan || '',
+  video: item.Video || '',
+  tag: item.Tag || '',
+  new: item.New || 'No',
+  order: item.Order || '',
+  imgStatus: item.Image_Status || ''
+});
+
+// Fetch vocab from external API — single request with selective fields
 export const fetchVocabDetailFromAPI = async (vocabName) => {
   if (!vocabName) return null;
 
   const formatted = formatString(vocabName);
   const capitalized = capitalizeFirstLetter(vocabName);
-  const endpoint = `https://mfd-final-test.onrender.com/api/bims?populate=*&filters[Word][$containsi]=${capitalized}`;
 
   try {
+    // Check alphabet cache first — free lookup, no network cost
     const cachedData = findVocabInAlphabetData(vocabName);
     if (cachedData) return cachedData;
 
     console.log(`Fetching "${vocabName}" from API`);
-    const response = await axios.get(endpoint);
+    const response = await axios.get(
+      `${BASE_URL}?${FIELD_PARAMS}&filters[Word][$containsi]=${encodeURIComponent(capitalized)}`
+    );
 
     const data = response.data?.data || [];
     const filtered = data
-      .map((item) => ({
-        kumpulanKategori: item.category_group?.KumpulanKategori || `${item.Kumpulan}/${item.Kategori}`,
-        groupCategory: item.category_group?.GroupCategory || `${item.Group}/${item.Category}`,
-        word: item.Word || '',
-        perkataan: item.Perkataan || '',
-        video: item.Video || '',
-        tag: item.Tag || '',
-        release: item.Release || '',
-        new: item.New || 'No',
-        sotd: item.SOTD || '',
-        order: item.Order || '',
-        imgStatus: item.Image_Status || ''
-      }))
-      .filter(
-        (entry) =>
-          ["Release 1", "Release 2", "Release 3"].includes(entry.release) &&
-          !formatString(entry.word).localeCompare(formatted)
-      );
+      .map(transformVocabItem)
+      .filter((entry) => !formatString(entry.word).localeCompare(formatted));
 
     return filtered.length > 0 ? filtered : null;
   } catch (error) {
@@ -91,7 +97,7 @@ export const getVocabDetail = async (vocabName) => {
   const now = Date.now();
 
   try {
-    // Return cached if valid
+    // Return cached if still valid
     if (
       vocabCache.has(vocabName) &&
       vocabCacheTimestamps.has(vocabName) &&
@@ -101,7 +107,7 @@ export const getVocabDetail = async (vocabName) => {
       return vocabCache.get(vocabName);
     }
 
-    // Check alphabet cache
+    // Check alphabet cache (no network cost)
     const alphabetData = findVocabInAlphabetData(vocabName);
     if (alphabetData) {
       vocabCache.set(vocabName, alphabetData);
@@ -109,7 +115,7 @@ export const getVocabDetail = async (vocabName) => {
       return alphabetData;
     }
 
-    // Fetch from API
+    // Fetch from API as last resort
     console.log(`Cache miss for "${vocabName}", querying API...`);
     const fetched = await fetchVocabDetailFromAPI(vocabName);
 
@@ -122,7 +128,7 @@ export const getVocabDetail = async (vocabName) => {
   } catch (err) {
     console.error(`Failed to get vocab: "${vocabName}"`, err);
 
-    // Fallback to stale cache if available
+    // Fallback to stale cache
     if (vocabCache.has(vocabName)) {
       console.log(`Using stale cache for "${vocabName}"`);
       return vocabCache.get(vocabName);
@@ -147,40 +153,34 @@ export const clearVocabCache = (vocabName = null) => {
   }
 };
 
-// Find similar words based on the given vocab using Levenshtein distance
+// Find similar words using Levenshtein distance
 export const findSimilarWords = async (vocabName, limit = 5) => {
   if (!vocabName) return [];
-  
+
   try {
-    // Get the first letter of the vocab to check the alphabet cache
     const formatted = formatString(vocabName);
     const firstLetter = formatted.charAt(0);
-    
-    // Try to get words from the same alphabet first
+
     let wordsFromSameAlphabet = [];
-    
+
     if (alphabetCache.has(firstLetter)) {
+      // Already in memory — no network call needed
       wordsFromSameAlphabet = alphabetCache.get(firstLetter);
     } else {
-      // If not in cache, fetch from API
-      const { getVocabsByAlphabet } = require('./alphabetAPI');
+      const { getVocabsByAlphabet } = await import('./alphabetAPI');
       wordsFromSameAlphabet = await getVocabsByAlphabet(firstLetter);
     }
-    
-    // Calculate Levenshtein distance for each word
+
     const scoredWords = wordsFromSameAlphabet
-      .filter(item => formatString(item.word) !== formatted) // Exclude the current word
-      .map(item => ({
-        ...item, // Keep all original properties
+      .filter((item) => formatString(item.word) !== formatted)
+      .map((item) => ({
+        ...item,
         score: levenshtein(formatString(item.word), formatted)
       }));
 
-    // Sort by similarity score (lower is better)
-    const similarWords = scoredWords
+    return scoredWords
       .sort((a, b) => a.score - b.score)
       .slice(0, limit);
-      
-    return similarWords;
   } catch (err) {
     console.error(`Failed to find similar words for: "${vocabName}"`, err);
     return [];

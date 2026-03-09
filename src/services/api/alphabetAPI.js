@@ -4,91 +4,50 @@ import { Store } from "../../flux";
 
 // Utility functions
 const formatString = (str) => Store.formatString(str);
-
 const getCurrentLocale = () => cookies.get("i18next") || "en";
+
+// Selective field population — avoids fetching unused relation data
+const FIELD_PARAMS =
+  "fields[0]=Word&fields[1]=Perkataan&fields[2]=Video&fields[3]=Tag&fields[4]=New&fields[5]=Order&fields[6]=Image_Status" +
+  "&populate[category_group][fields][0]=KumpulanKategori&populate[category_group][fields][1]=GroupCategory";
+
+const BASE_URL = "https://bimsignbank-strapi.onrender.com/api/bims";
 
 // API functions
 export const getAlphabetsList = () => Store.getAlphabetsList();
 
-// Fetch vocabulary data directly from API
+// Fetch ALL vocabulary in a single request (used for full-data scenarios)
 export const fetchVocabData = async () => {
-  let allData = [];
-  let page = 1;
-  let hasMoreData = true;
+  try {
+    const response = await axios.get(
+      `${BASE_URL}?${FIELD_PARAMS}&pagination[pageSize]=2000`
+    );
 
-  while (hasMoreData) {
-    try {
-      const response = await axios.get(
-        `https://mfd-final-test.onrender.com/api/bims?populate=*&pagination[page]=${page}&pagination[pageSize]=25`
-      );
-
-      if (!response.data?.data) {
-        console.error("Invalid API response structure:", response);
-        break;
-      }
-
-      const transformedData = response.data.data.map((item) => {
-        const categoryGroup = item.category_group || {};
-        return {
-          kumpulanKategori:
-            categoryGroup.KumpulanKategori ||
-            `${item.Kumpulan}/${item.Kategori}`,
-          groupCategory:
-            categoryGroup.GroupCategory || `${item.Group}/${item.Category}`,
-          word: item.Word || "",
-          perkataan: item.Perkataan || "",
-          video: item.Video || "",
-          tag: item.Tag || "",
-          release: item.Release || "",
-          new: item.New || "No",
-          sotd: item.SOTD || "",
-          order: item.Order || "",
-          imgStatus: item.Image_Status || "",
-        };
-      });
-
-      allData = [...allData, ...transformedData];
-      hasMoreData = page < response.data.meta.pagination.pageCount;
-      page++;
-    } catch (err) {
-      console.error("Error fetching data:", err);
-      hasMoreData = false;
+    if (!response.data?.data) {
+      console.error("Invalid API response structure:", response);
+      return [];
     }
+
+    const processedData = response.data.data
+      .map((item) => transformItem(item))
+      .map(cleanItem)
+      .sort((a, b) => a.kumpulanKategori.localeCompare(b.kumpulanKategori));
+
+    return processedData;
+  } catch (err) {
+    console.error("Error fetching vocab data:", err);
+    return [];
   }
-
-  const processedData = allData
-    .map((item) => ({
-      kumpulanKategori: item.kumpulanKategori
-        .toString()
-        .replaceAll(/(\r\n|\n|\r)/gm, ""),
-      groupCategory: item.groupCategory
-        .toString()
-        .replaceAll(/(\r\n|\n|\r)/gm, ""),
-      word: item.word.toString().trim(),
-      perkataan: item.perkataan.toString().trim(),
-      video: item.video,
-      tag: item.tag,
-      release: item.release,
-      new: item.new,
-      order: item.order,
-      sotd: item.sotd,
-      imgStatus: item.imgStatus,
-    }))
-    .filter((item) =>
-      ["Release 1", "Release 2", "Release 3"].includes(item.release)
-    )
-    .sort((a, b) => a.kumpulanKategori.localeCompare(b.kumpulanKategori));
-
-  return processedData;
 };
 
 // Alphabet-specific caching
-let cachedVocabs = null;
-let cacheTimestamp = null;
-const CACHE_DURATION = 5 * 60 * 1000;
-
 export const alphabetCache = new Map();
 export const alphabetCacheTimestamps = new Map();
+const CACHE_DURATION = 5 * 60 * 1000;
+
+// In-flight request deduplication — prevents parallel components from
+// firing the same API call simultaneously
+const inFlightRequests = new Map();
 
 export const getVocabsByAlphabet = async (alphabetFirst) => {
   if (!alphabetFirst) return [];
@@ -116,14 +75,12 @@ export const getVocabsByAlphabet = async (alphabetFirst) => {
     console.error("Error in getVocabsByAlphabet:", error);
 
     if (alphabetCache.has(alphabetFirst)) {
-      console.log(
-        `Using expired cache for alphabet: ${alphabetFirst} due to error`
-      );
+      console.log(`Using expired cache for alphabet: ${alphabetFirst} due to error`);
       return alphabetCache.get(alphabetFirst);
     }
 
     const storeVocabs = Store.getVocabsItems();
-    if (storeVocabs && storeVocabs.length > 0) {
+    if (storeVocabs?.length > 0) {
       console.log("Falling back to Store data");
       return getVocabsFromStore(alphabetFirst, storeVocabs);
     }
@@ -140,105 +97,66 @@ export const clearAlphabetCache = (alphabetFirst = null) => {
   } else {
     alphabetCache.clear();
     alphabetCacheTimestamps.clear();
-    cachedVocabs = null;
-    cacheTimestamp = null;
     console.log("All caches cleared");
   }
 };
 
+// Single-request fetch per alphabet letter (replaces paginated while-loop)
 export const fetchVocabsByAlphabetFromAPI = async (alphabetFirst) => {
   if (!alphabetFirst) return [];
 
-  let allData = [];
-  let page = 1;
-  let hasMoreData = true;
+  // Deduplicate in-flight requests for the same letter
+  if (inFlightRequests.has(alphabetFirst)) {
+    console.log(`Reusing in-flight request for alphabet: ${alphabetFirst}`);
+    return inFlightRequests.get(alphabetFirst);
+  }
+
   const locale = getCurrentLocale();
   const fieldToFilter = locale === "ms" ? "Perkataan" : "Word";
   const uppercaseAlphabet = alphabetFirst.toUpperCase();
 
-  console.log(
-    `Fetching data with filter: ${fieldToFilter} starts with ${uppercaseAlphabet}`
-  );
+  console.log(`Fetching data with filter: ${fieldToFilter} starts with ${uppercaseAlphabet}`);
 
-  while (hasMoreData) {
-    try {
-      const response = await axios.get(
-        `https://mfd-final-test.onrender.com/api/bims?populate=*&pagination[page]=${page}&pagination[pageSize]=25&filters[${fieldToFilter}][$startsWith]=${uppercaseAlphabet}`
-      );
-
+  const requestPromise = axios
+    .get(
+      `${BASE_URL}?${FIELD_PARAMS}&pagination[pageSize]=500&filters[${fieldToFilter}][$startsWith]=${uppercaseAlphabet}`
+    )
+    .then((response) => {
       if (!response.data?.data) {
         console.error("Invalid API response structure:", response);
-        break;
+        return [];
       }
 
-      const transformedData = response.data.data.map((item) => {
-        const categoryGroup = item.category_group || {};
-        return {
-          kumpulanKategori:
-            categoryGroup.KumpulanKategori ||
-            `${item.Kumpulan}/${item.Kategori}`,
-          groupCategory:
-            categoryGroup.GroupCategory || `${item.Group}/${item.Category}`,
-          word: item.Word || "",
-          perkataan: item.Perkataan || "",
-          video: item.Video || "",
-          tag: item.Tag || "",
-          release: item.Release || "",
-          new: item.New || "No",
-          sotd: item.SOTD || "",
-          order: item.Order || "",
-          imgStatus: item.Image_Status || "",
-        };
-      });
+      const processedData = response.data.data
+        .map((item) => transformItem(item))
+        .map(cleanItem)
+        .sort((a, b) =>
+          locale === "ms"
+            ? a.perkataan.localeCompare(b.perkataan)
+            : a.word.localeCompare(b.word)
+        );
 
-      allData = [...allData, ...transformedData];
-      hasMoreData = page < response.data.meta.pagination.pageCount;
-      page++;
-    } catch (err) {
+      console.log(`API returned ${processedData.length} items for ${uppercaseAlphabet}`);
+      return processedData;
+    })
+    .catch((err) => {
       console.error("Error fetching filtered data:", err);
-      hasMoreData = false;
-    }
-  }
+      return [];
+    })
+    .finally(() => {
+      inFlightRequests.delete(alphabetFirst);
+    });
 
-  const processedData = allData
-    .map((item) => ({
-      kumpulanKategori: item.kumpulanKategori
-        .toString()
-        .replaceAll(/(\r\n|\n|\r)/gm, ""),
-      groupCategory: item.groupCategory
-        .toString()
-        .replaceAll(/(\r\n|\n|\r)/gm, ""),
-      word: item.word.toString().trim(),
-      perkataan: item.perkataan.toString().trim(),
-      video: item.video,
-      tag: item.tag,
-      release: item.release,
-      new: item.new,
-      order: item.order,
-      sotd: item.sotd,
-      imgStatus: item.imgStatus,
-    }))
-    .filter((item) =>
-      ["Release 1", "Release 2", "Release 3"].includes(item.release)
-    )
-    .sort((a, b) =>
-      locale === "ms"
-        ? a.perkataan.localeCompare(b.perkataan)
-        : a.word.localeCompare(b.word)
-    );
-
-  console.log(
-    `API returned ${processedData.length} items for ${uppercaseAlphabet}`
-  );
-  return processedData;
+  inFlightRequests.set(alphabetFirst, requestPromise);
+  return requestPromise;
 };
 
-// Get new signs - fixed implementation with proper caching
+// Get new signs with caching — single API request
 export const getNewSigns = async () => {
+  const cacheKey = "new-signs";
+
   try {
-    // Check if we have cached data for new signs
     const now = Date.now();
-    const cacheKey = "new-signs";
 
     if (
       alphabetCache.has(cacheKey) &&
@@ -254,69 +172,31 @@ export const getNewSigns = async () => {
     const locale = getCurrentLocale();
 
     const response = await axios.get(
-      `https://mfd-final-test.onrender.com/api/bims?populate=*&sort=createdAt:desc&pagination[limit]=25`
+      `${BASE_URL}?${FIELD_PARAMS}&sort=createdAt:desc&pagination[pageSize]=25`
     );
 
-    const transformedData = response.data.data.map((item) => {
-      const categoryGroup = item.category_group || {};
-      return {
-        kumpulanKategori:
-          categoryGroup.KumpulanKategori || `${item.Kumpulan}/${item.Kategori}`,
-        groupCategory:
-          categoryGroup.GroupCategory || `${item.Group}/${item.Category}`,
-        word: item.Word || "",
-        perkataan: item.Perkataan || "",
-        video: item.Video || "",
-        tag: item.Tag || "",
-        release: item.Release || "",
-        new: item.New || "No",
-        sotd: item.SOTD || "",
-        order: item.Order || "",
-        imgStatus: item.Image_Status || "",
-      };
-    });
+    if (!response.data?.data) {
+      console.error("Invalid API response structure:", response);
+      return [];
+    }
 
-    const processedData = transformedData
-      .map((item) => ({
-        kumpulanKategori: item.kumpulanKategori
-          .toString()
-          .replaceAll(/(\r\n|\n|\r)/gm, ""),
-        groupCategory: item.groupCategory
-          .toString()
-          .replaceAll(/(\r\n|\n|\r)/gm, ""),
-        word: item.word.toString().trim(),
-        perkataan: item.perkataan.toString().trim(),
-        video: item.video,
-        tag: item.tag,
-        release: item.release,
-        new: item.new,
-        order: item.order,
-        sotd: item.sotd,
-        imgStatus: item.imgStatus,
-      }))
-      .filter((item) =>
-        ["Release 1", "Release 2", "Release 3"].includes(item.release)
-      )
-      // Additional client-side sorting to ensure correct alphabetical order
+    const processedData = response.data.data
+      .map((item) => transformItem(item))
+      .map(cleanItem)
       .sort((a, b) =>
         locale === "ms"
           ? a.perkataan.localeCompare(b.perkataan)
           : a.word.localeCompare(b.word)
       );
 
-    // Store in cache
     alphabetCache.set(cacheKey, processedData);
     alphabetCacheTimestamps.set(cacheKey, now);
 
-    console.log(
-      `API returned ${processedData.length} new sign items, sorted alphabetically`
-    );
+    console.log(`API returned ${processedData.length} new sign items`);
     return processedData;
   } catch (error) {
     console.error("Error in getNewSigns:", error);
 
-    // Check if we have cached data even if it's expired
-    const cacheKey = "new-signs";
     if (alphabetCache.has(cacheKey)) {
       console.log(`Using expired cache for new signs due to error`);
       return alphabetCache.get(cacheKey);
@@ -325,6 +205,37 @@ export const getNewSigns = async () => {
     return [];
   }
 };
+
+// ─── Shared helpers ───────────────────────────────────────────────────────────
+
+const transformItem = (item) => {
+  const categoryGroup = item.category_group || {};
+  return {
+    kumpulanKategori:
+      categoryGroup.KumpulanKategori || `${item.Kumpulan}/${item.Kategori}`,
+    groupCategory:
+      categoryGroup.GroupCategory || `${item.Group}/${item.Category}`,
+    word: item.Word || "",
+    perkataan: item.Perkataan || "",
+    video: item.Video || "",
+    tag: item.Tag || "",
+    new: item.New || "No",
+    order: item.Order || "",
+    imgStatus: item.Image_Status || "",
+  };
+};
+
+const cleanItem = (item) => ({
+  kumpulanKategori: item.kumpulanKategori.toString().replaceAll(/(\r\n|\n|\r)/gm, ""),
+  groupCategory: item.groupCategory.toString().replaceAll(/(\r\n|\n|\r)/gm, ""),
+  word: item.word.toString().trim(),
+  perkataan: item.perkataan.toString().trim(),
+  video: item.video,
+  tag: item.tag,
+  new: item.new,
+  order: item.order,
+  imgStatus: item.imgStatus,
+});
 
 const getVocabsFromStore = (alphabetFirst, vocabsItems) => {
   const locale = getCurrentLocale();
