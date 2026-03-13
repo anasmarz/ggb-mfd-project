@@ -40,7 +40,8 @@
     },
     "scripts": {
         "start": "react-scripts start",
-        "build": "react-scripts build",
+        "export-vocab": "node scripts/exportVocab.js",
+        "build": "npm run export-vocab && react-scripts build",
         "test": "react-scripts test --reporters=jest-html-reporters",
         "eject": "react-scripts eject"
     },

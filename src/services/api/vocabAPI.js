@@ -1,7 +1,7 @@
-import axios from "axios";
 import levenshtein from 'js-levenshtein';
 import { Store } from "../../flux";
 import { alphabetCache, alphabetCacheTimestamps } from "./alphabetAPI";
+import { loadStaticVocabData } from "./staticVocabClient";
 
 // Utility: Format string using Store method
 const formatString = (str) => Store.formatString(str);
@@ -11,13 +11,6 @@ const capitalizeFirstLetter = (string) => {
   if (!string) return '';
   return string.charAt(0).toUpperCase() + string.slice(1);
 };
-
-// Selective field population — avoids fetching unused relation data
-const FIELD_PARAMS =
-  "fields[0]=Word&fields[1]=Perkataan&fields[2]=Video&fields[3]=Tag&fields[4]=New&fields[5]=Order&fields[6]=Image_Status" +
-  "&populate[category_group][fields][0]=KumpulanKategori&populate[category_group][fields][1]=GroupCategory";
-
-const BASE_URL = "https://bimsignbank-strapi.onrender.com/api/bims";
 
 // Cache setup
 const vocabCache = new Map();
@@ -48,20 +41,20 @@ const findVocabInAlphabetData = (vocabName) => {
   return null;
 };
 
-// Transform a raw Strapi item into the app's vocab shape
+// Transform an item from the static dataset into the expected vocab shape
 const transformVocabItem = (item) => ({
-  kumpulanKategori: item.category_group?.KumpulanKategori || `${item.Kumpulan}/${item.Kategori}`,
-  groupCategory: item.category_group?.GroupCategory || `${item.Group}/${item.Category}`,
-  word: item.Word || '',
-  perkataan: item.Perkataan || '',
-  video: item.Video || '',
-  tag: item.Tag || '',
-  new: item.New || 'No',
-  order: item.Order || '',
-  imgStatus: item.Image_Status || ''
+  kumpulanKategori: item.kumpulanKategori || `${item.Kumpulan}/${item.Kategori}`,
+  groupCategory: item.groupCategory || `${item.Group}/${item.Category}`,
+  word: item.word || item.Word || '',
+  perkataan: item.perkataan || item.Perkataan || '',
+  video: item.video || item.Video || '',
+  tag: item.tag || item.Tag || '',
+  new: item.new || item.New || 'No',
+  order: item.order || item.Order || '',
+  imgStatus: item.imgStatus || item.Image_Status || ''
 });
 
-// Fetch vocab from external API — single request with selective fields
+// Fetch vocab from the static dataset — no database calls
 export const fetchVocabDetailFromAPI = async (vocabName) => {
   if (!vocabName) return null;
 
@@ -73,13 +66,10 @@ export const fetchVocabDetailFromAPI = async (vocabName) => {
     const cachedData = findVocabInAlphabetData(vocabName);
     if (cachedData) return cachedData;
 
-    console.log(`Fetching "${vocabName}" from API`);
-    const response = await axios.get(
-      `${BASE_URL}?${FIELD_PARAMS}&filters[Word][$containsi]=${encodeURIComponent(capitalized)}`
-    );
+    console.log(`Fetching "${vocabName}" from static dataset`);
+    const allItems = await loadStaticVocabData();
 
-    const data = response.data?.data || [];
-    const filtered = data
+    const filtered = allItems
       .map(transformVocabItem)
       .filter((entry) => !formatString(entry.word).localeCompare(formatted));
 

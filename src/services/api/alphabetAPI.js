@@ -1,43 +1,23 @@
-import axios from "axios";
 import cookies from "js-cookie";
 import { Store } from "../../flux";
+import { loadStaticVocabData } from "./staticVocabClient";
 
 // Utility functions
 const formatString = (str) => Store.formatString(str);
 const getCurrentLocale = () => cookies.get("i18next") || "en";
 
-// Selective field population — avoids fetching unused relation data
-const FIELD_PARAMS =
-  "fields[0]=Word&fields[1]=Perkataan&fields[2]=Video&fields[3]=Tag&fields[4]=New&fields[5]=Order&fields[6]=Image_Status" +
-  "&populate[category_group][fields][0]=KumpulanKategori&populate[category_group][fields][1]=GroupCategory";
-
-const BASE_URL = "https://bimsignbank-strapi.onrender.com/api/bims";
-
 // API functions
 export const getAlphabetsList = () => Store.getAlphabetsList();
 
-// Fetch ALL vocabulary in a single request (used for full-data scenarios)
+// Fetch ALL vocabulary from the static dataset (used for full-data scenarios)
 export const fetchVocabData = async () => {
-  try {
-    const response = await axios.get(
-      `${BASE_URL}?${FIELD_PARAMS}&pagination[pageSize]=2000`
-    );
+  const rawData = await loadStaticVocabData();
 
-    if (!response.data?.data) {
-      console.error("Invalid API response structure:", response);
-      return [];
-    }
+  const data = rawData.map((item) => cleanItem(transformItem(item)));
 
-    const processedData = response.data.data
-      .map((item) => transformItem(item))
-      .map(cleanItem)
-      .sort((a, b) => a.kumpulanKategori.localeCompare(b.kumpulanKategori));
-
-    return processedData;
-  } catch (err) {
-    console.error("Error fetching vocab data:", err);
-    return [];
-  }
+  return data.slice().sort((a, b) =>
+    a.kumpulanKategori.localeCompare(b.kumpulanKategori)
+  );
 };
 
 // Alphabet-specific caching
@@ -101,7 +81,7 @@ export const clearAlphabetCache = (alphabetFirst = null) => {
   }
 };
 
-// Single-request fetch per alphabet letter (replaces paginated while-loop)
+// Single-request fetch per alphabet letter using the static dataset
 export const fetchVocabsByAlphabetFromAPI = async (alphabetFirst) => {
   if (!alphabetFirst) return [];
 
@@ -111,38 +91,27 @@ export const fetchVocabsByAlphabetFromAPI = async (alphabetFirst) => {
     return inFlightRequests.get(alphabetFirst);
   }
 
-  const locale = getCurrentLocale();
-  const fieldToFilter = locale === "ms" ? "Perkataan" : "Word";
   const uppercaseAlphabet = alphabetFirst.toUpperCase();
+  const locale = getCurrentLocale();
 
-  console.log(`Fetching data with filter: ${fieldToFilter} starts with ${uppercaseAlphabet}`);
+  console.log(
+    `Fetching data from static dataset for alphabet: ${uppercaseAlphabet}`
+  );
 
-  const requestPromise = axios
-    .get(
-      `${BASE_URL}?${FIELD_PARAMS}&pagination[pageSize]=500&filters[${fieldToFilter}][$startsWith]=${uppercaseAlphabet}`
-    )
-    .then((response) => {
-      if (!response.data?.data) {
-        console.error("Invalid API response structure:", response);
-        return [];
-      }
-
-      const processedData = response.data.data
-        .map((item) => transformItem(item))
-        .map(cleanItem)
+  const requestPromise = loadStaticVocabData()
+    .then((allItems) =>
+      allItems
+        .filter((item) => {
+          const value =
+            locale === "ms" ? item.perkataan || "" : item.word || "";
+          return value.toUpperCase().startsWith(uppercaseAlphabet);
+        })
         .sort((a, b) =>
           locale === "ms"
             ? a.perkataan.localeCompare(b.perkataan)
             : a.word.localeCompare(b.word)
-        );
-
-      console.log(`API returned ${processedData.length} items for ${uppercaseAlphabet}`);
-      return processedData;
-    })
-    .catch((err) => {
-      console.error("Error fetching filtered data:", err);
-      return [];
-    })
+        )
+    )
     .finally(() => {
       inFlightRequests.delete(alphabetFirst);
     });
@@ -151,7 +120,7 @@ export const fetchVocabsByAlphabetFromAPI = async (alphabetFirst) => {
   return requestPromise;
 };
 
-// Get new signs with caching — single API request
+// Get new signs with caching — reads from static dataset
 export const getNewSigns = async () => {
   const cacheKey = "new-signs";
 
@@ -167,27 +136,19 @@ export const getNewSigns = async () => {
       return alphabetCache.get(cacheKey);
     }
 
-    console.log(`Cache miss for new signs, fetching from API`);
+    console.log(`Cache miss for new signs, reading from static dataset`);
 
     const locale = getCurrentLocale();
+    const allItems = await loadStaticVocabData();
 
-    const response = await axios.get(
-      `${BASE_URL}?${FIELD_PARAMS}&sort=createdAt:desc&pagination[pageSize]=25`
-    );
-
-    if (!response.data?.data) {
-      console.error("Invalid API response structure:", response);
-      return [];
-    }
-
-    const processedData = response.data.data
-      .map((item) => transformItem(item))
-      .map(cleanItem)
+    const processedData = allItems
+      .filter((item) => (item.new || "").toLowerCase() === "yes")
       .sort((a, b) =>
         locale === "ms"
           ? a.perkataan.localeCompare(b.perkataan)
           : a.word.localeCompare(b.word)
-      );
+      )
+      .slice(0, 25);
 
     alphabetCache.set(cacheKey, processedData);
     alphabetCacheTimestamps.set(cacheKey, now);
