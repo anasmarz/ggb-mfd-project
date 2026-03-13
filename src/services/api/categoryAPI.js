@@ -1,7 +1,7 @@
-import axios from "axios";
 import cookies from "js-cookie";
 import { Store } from "../../flux";
 import { getNewSigns } from './alphabetAPI';
+import { loadStaticVocabData } from "./staticVocabClient";
 
 // Utility function to format strings
 const formatString = (str) => Store.formatString(str);
@@ -9,41 +9,28 @@ const formatString = (str) => Store.formatString(str);
 // Get current locale setting from cookies (default to English)
 const getCurrentLocale = () => cookies.get("i18next") || "en";
 
-// Cache variables to avoid redundant API calls
+// Cache variables derived from the static vocab dataset
 let categoryCache = null;
 let groupCache = null;
 
-// Selective field population for category-groups — only the two fields we need
-const CATEGORY_GROUP_URL =
-  "https://bimsignbank-strapi.onrender.com/api/category-groups" +
-  "?fields[0]=KumpulanKategori&fields[1]=GroupCategory&fields[2]=Remark" +
-  "&pagination[pageSize]=200&filters[Remark][$ne]=Unpublished";
-
-// Fetches all category data from the API in a single request
-// (replaces the while-loop; 200 page size covers all known category-groups)
-const fetchCategoryData = async () => {
+// Derive category-group data from the static vocab dataset
+const loadCategoryDataFromStatic = async () => {
   if (categoryCache) return categoryCache;
 
-  try {
-    const response = await axios.get(CATEGORY_GROUP_URL);
+  const allItems = await loadStaticVocabData();
 
-    if (!response.data?.data) {
-      console.error("Invalid API response structure:", response);
-      return [];
-    }
-
-    const transformedData = response.data.data.map((item) => ({
-      KumpulanKategori: item.KumpulanKategori || "",
-      GroupCategory: item.GroupCategory || "",
-      Remark: item.Remark || "",
+  const mapped = allItems
+    .filter(
+      (item) => item.groupCategory && item.kumpulanKategori
+    )
+    .map((item) => ({
+      KumpulanKategori: item.kumpulanKategori,
+      GroupCategory: item.groupCategory,
+      Remark: null,
     }));
 
-    categoryCache = transformedData;
-    return transformedData;
-  } catch (err) {
-    console.error("Error fetching category data:", err);
-    return [];
-  }
+  categoryCache = mapped;
+  return mapped;
 };
 
 // Processes raw category data to extract unique group entries
@@ -104,7 +91,7 @@ const restructureJSONGroup = (data) => {
 export const getGroupList = async () => {
   if (groupCache) return groupCache;
 
-  const data = await fetchCategoryData();
+  const data = await loadCategoryDataFromStatic();
   const reconData = restructureJSONGroup(data);
   groupCache = reconData;
   return reconData;
@@ -136,7 +123,7 @@ export const getGroupItems = async () => {
 // Return groups and categories pairs (unique)
 const getCategoryItems = async () => {
   try {
-    const categoryData = await fetchCategoryData();
+    const categoryData = await loadCategoryDataFromStatic();
 
     if (!categoryData?.length) {
       console.warn("No category data available");
@@ -216,7 +203,7 @@ export const getCategoriesOfGroup = async (lang = "ms") => {
 
 // Return the total number of category records fetched
 export const getCategoryLength = async () => {
-  const data = await fetchCategoryData();
+  const data = await loadCategoryDataFromStatic();
   return data.length;
 };
 

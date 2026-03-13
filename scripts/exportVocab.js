@@ -31,6 +31,7 @@ const transformItem = (item) => {
     new: attrs.New || "No",
     order: attrs.Order || "",
     imgStatus: attrs.Image_Status || "",
+    videoStatus: attrs.Video_Status || "",
   };
 };
 
@@ -49,6 +50,7 @@ const cleanItem = (item) => ({
   new: item.new || "No",
   order: item.order || "",
   imgStatus: item.imgStatus || "",
+  videoStatus: item.videoStatus || "",
 });
 
 // Derive a lightweight search index from the full dataset
