@@ -14,13 +14,21 @@ export async function getSignOfTheDayLightweight() {
 
   const allItems = await loadStaticVocabData();
 
-  // Filter to only valid published entries with a video
-  const validEntries = allItems.filter(
+  // Prefer entries explicitly marked as published with a video
+  let validEntries = allItems.filter(
     (item) => item.video && item.videoStatus === "Published"
   );
 
   if (validEntries.length === 0) {
-    console.warn("No valid SOTD entries found in static dataset");
+    // Fallback: allow any entry with a video so SOTD still works
+    console.warn(
+      "No SOTD entries with videoStatus='Published' found; falling back to any entry with a video"
+    );
+    validEntries = allItems.filter((item) => item.video);
+  }
+
+  if (validEntries.length === 0) {
+    console.warn("No valid SOTD entries with a video found in static dataset");
     return null;
   }
 

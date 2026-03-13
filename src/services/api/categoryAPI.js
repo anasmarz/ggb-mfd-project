@@ -20,9 +20,19 @@ const loadCategoryDataFromStatic = async () => {
   const allItems = await loadStaticVocabData();
 
   const mapped = allItems
-    .filter(
-      (item) => item.groupCategory && item.kumpulanKategori
-    )
+    .filter((item) => {
+      const kk = (item.kumpulanKategori || "").toString().trim();
+      const gc = (item.groupCategory || "").toString().trim();
+
+      // Must have both values
+      if (!kk || !gc) return false;
+
+      // Skip obviously invalid placeholders like "/" or lacking the expected "Group/Category" structure
+      if (kk === "/" || gc === "/") return false;
+      if (!kk.includes("/") || !gc.includes("/")) return false;
+
+      return true;
+    })
     .map((item) => ({
       KumpulanKategori: item.kumpulanKategori,
       GroupCategory: item.groupCategory,
