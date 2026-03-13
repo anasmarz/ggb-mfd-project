@@ -65,25 +65,51 @@ const buildSearchIndex = (items) =>
 
 async function exportVocab() {
   try {
-    const pageSize = process.env.VOCAB_PAGE_SIZE || 2000;
-    const url = `${STRAPI_BASE_URL}?${FIELD_PARAMS}&pagination[pageSize]=${pageSize}`;
+    const pageSize = Number(process.env.VOCAB_PAGE_SIZE) || 1000;
+    let page = 1;
+    let pageCount = 1;
+    const rawItems = [];
 
-    console.log(`[export-vocab] Fetching vocab from: ${url}`);
-    const res = await axios.get(url);
+    console.log(
+      `[export-vocab] Starting full vocab export from ${STRAPI_BASE_URL} with pageSize=${pageSize}`
+    );
 
-    if (!res.data || !Array.isArray(res.data.data)) {
-      console.error(
-        "[export-vocab] Unexpected Strapi response structure:",
-        res.data
+    while (page <= pageCount) {
+      const url = `${STRAPI_BASE_URL}?${FIELD_PARAMS}&pagination[page]=${page}&pagination[pageSize]=${pageSize}`;
+      console.log(`[export-vocab] Fetching page ${page} from: ${url}`);
+
+      const res = await axios.get(url);
+
+      if (!res.data || !Array.isArray(res.data.data)) {
+        console.error(
+          "[export-vocab] Unexpected Strapi response structure:",
+          res.data
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      const pageItems = res.data.data.map(
+        (entry) => entry.attributes || entry
       );
-      process.exitCode = 1;
-      return;
+      rawItems.push(...pageItems);
+
+      const meta = res.data.meta?.pagination;
+      pageCount = meta?.pageCount || 1;
+      const total = meta?.total || rawItems.length;
+
+      console.log(
+        `[export-vocab] Retrieved ${pageItems.length} items on page ${page}/${pageCount} (total so far: ${rawItems.length}/${total})`
+      );
+
+      page += 1;
     }
 
-    const rawItems = res.data.data.map((entry) => entry.attributes || entry);
     const processed = rawItems.map(transformItem).map(cleanItem);
 
-    console.log(`[export-vocab] Processed ${processed.length} vocab entries`);
+    console.log(
+      `[export-vocab] Processed ${processed.length} vocab entries in total`
+    );
 
     const outputDir = path.join(__dirname, "..", "public");
     const vocabPath = path.join(outputDir, "vocab.json");
