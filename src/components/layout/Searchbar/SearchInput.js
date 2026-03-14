@@ -3,11 +3,8 @@ import { useTranslation } from "react-i18next";
 import Select, { components } from "react-select";
 import { useNavigate } from "react-router-dom";
 import i18next from "i18next";
-import axios from "axios";
 import { Store } from "../../../flux";
 
-const MAX_PAGES = 5;
-const VALID_RELEASES = ["Release 1", "Release 2", "Release 3"];
 const CACHE_KEY = "searchVocabularyData";
 const CACHE_TIMESTAMP_KEY = "searchVocabularyTimestamp";
 const CACHE_DURATION_MS = 10 * 60 * 1000;
@@ -23,15 +20,6 @@ const SearchInput = () => {
   const debounceRef = useRef(null);
   const isMounted = useRef(true);
 
-  const transformData = (data) => (
-    data.map(item => ({
-      groupCategory: item.category_group?.GroupCategory || `${item.Group}/${item.Category}`,
-      word: item.Word || '',
-      perkataan: item.Perkataan || '',
-      release: item.Release || ''
-    })).filter(item => VALID_RELEASES.includes(item.release))
-  );
-
   const fetchVocabularyData = async () => {
     setLoading(true);
     try {
@@ -40,57 +28,41 @@ const SearchInput = () => {
       const now = Date.now();
 
       if (cachedData && cachedTimestamp && (now - parseInt(cachedTimestamp)) < CACHE_DURATION_MS) {
-        setOptions(JSON.parse(cachedData));
+        const parsed = JSON.parse(cachedData);
+        if (isMounted.current) setOptions(parsed);
         return;
       }
 
-      let allData = [];
-      for (let page = 1; page <= MAX_PAGES; page++) {
-        const res = await axios.get(`https://mfd-final-test.onrender.com/api/bims?populate=*&pagination[page]=${page}&pagination[pageSize]=100`);
-        const pageData = res.data?.data || [];
-        allData = [...allData, ...pageData];
+      const res = await fetch("/vocab.json");
+      const vocab = await res.json();
 
-        const { pageCount } = res.data.meta.pagination;
-        if (page >= pageCount) break;
+      if (!Array.isArray(vocab)) {
+        console.error("Invalid vocab.json structure");
+        setOptions(Store.getSortedVocabsItems?.(currentLanguage) || []);
+        return;
       }
 
-      const filteredData = transformData(allData).sort((a, b) =>
-        currentLanguage === "en" ? a.word.localeCompare(b.word) : a.perkataan.localeCompare(b.perkataan)
+      const transformed = vocab.map((item) => ({
+        groupCategory: item.groupCategory || "",
+        word: item.word || "",
+        perkataan: item.perkataan || "",
+      })).filter((item) => item.word || item.perkataan);
+
+      const sorted = transformed.sort((a, b) =>
+        currentLanguage === "en"
+          ? (a.word || "").localeCompare(b.word || "")
+          : (a.perkataan || "").localeCompare(b.perkataan || "")
       );
 
-      sessionStorage.setItem(CACHE_KEY, JSON.stringify(filteredData));
+      sessionStorage.setItem(CACHE_KEY, JSON.stringify(sorted));
       sessionStorage.setItem(CACHE_TIMESTAMP_KEY, now.toString());
 
-      if (isMounted.current) setOptions(filteredData);
+      if (isMounted.current) setOptions(sorted);
     } catch (error) {
-      console.error("Vocabulary fetch error:", error);
-      setOptions(Store.getSortedVocabsItems(currentLanguage));
+      console.error("Search vocabulary fetch error:", error);
+      setOptions(Store.getSortedVocabsItems?.(currentLanguage) || []);
     } finally {
       if (isMounted.current) setLoading(false);
-    }
-  };
-
-  const searchSpecificTerm = async (query) => {
-    if (!query || query.length < 2) return;
-
-    try {
-      const field = currentLanguage === "en" ? "Word" : "Perkataan";
-      const res = await axios.get(`https://mfd-final-test.onrender.com/api/bims?populate=*&filters[${field}][$containsi]=${query}`);
-      const results = transformData(res.data?.data || []);
-
-      const seen = new Set(options.map(opt => currentLanguage === "en" ? opt.word : opt.perkataan));
-      const uniqueResults = results.filter(item => !seen.has(currentLanguage === "en" ? item.word : item.perkataan));
-
-      if (uniqueResults.length) {
-        const updated = [...options, ...uniqueResults].sort((a, b) =>
-          currentLanguage === "en" ? a.word.localeCompare(b.word) : a.perkataan.localeCompare(b.perkataan)
-        );
-        setOptions(updated);
-        sessionStorage.setItem(CACHE_KEY, JSON.stringify(updated));
-        sessionStorage.setItem(CACHE_TIMESTAMP_KEY, Date.now().toString());
-      }
-    } catch (err) {
-      console.error("Search term fetch error:", err);
     }
   };
 
@@ -98,19 +70,19 @@ const SearchInput = () => {
     if (action !== "input-change") return;
     setSearchInput(input);
     setOpenMenu(true);
-
     clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => searchSpecificTerm(input), 300);
   };
 
   const handleSelectChange = (selected) => {
     if (!selected) return;
 
-    const groupCategory = selected.groupCategory.split(",")[0];
-    const [groupRaw, categoryRaw] = groupCategory.split("/");
+    const groupCategory = ((selected.groupCategory || "").split(",")[0] || "").trim();
+    const parts = groupCategory.split("/").map((p) => p.trim());
+    const groupRaw = parts[0] || "";
+    const categoryRaw = parts[1] || "";
     const group = Store.formatString(groupRaw);
     const category = Store.formatString(categoryRaw);
-    const word = Store.formatString(selected.word);
+    const word = Store.formatString(selected.word || selected.perkataan || "");
 
     navigate(`/groups/${group}/${category}/${word}`);
     setOpenMenu(false);
@@ -139,16 +111,22 @@ const SearchInput = () => {
               {currentLanguage === "en" ? option.word : option.perkataan}
             </strong>
           )}
-          getOptionValue={(option) => currentLanguage === "en" ? option.word : option.perkataan}
+          getOptionValue={(option) =>
+            currentLanguage === "en" ? option.word : option.perkataan
+          }
           onInputChange={handleInputChange}
           onBlur={() => setOpenMenu(false)}
           menuIsOpen={openMenu}
           value={null}
           placeholder={loading ? t("loading") : t("search_placeholder")}
-          noOptionsMessage={() => loading ? t("loading") : t("no_results")}
+          noOptionsMessage={() => (loading ? t("loading") : t("no_results"))}
           filterOption={(option, input) => {
-            const label = currentLanguage === "en" ? option.data.word : option.data.perkataan;
-            return label.toLowerCase().includes(input.toLowerCase());
+            if (!input || input.length < 2) return true;
+            const label =
+              currentLanguage === "en" ? option.data.word : option.data.perkataan;
+            return (label || "")
+              .toLowerCase()
+              .includes((input || "").toLowerCase());
           }}
           components={{ Menu }}
         />

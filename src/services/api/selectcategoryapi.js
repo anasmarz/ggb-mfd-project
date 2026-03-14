@@ -1,5 +1,5 @@
+import axios from "axios";
 import { Store } from "../../flux";
-import { loadStaticVocabData } from "./staticVocabClient";
 
 // Cache mechanism
 const categoryCache = new Map();
@@ -11,9 +11,32 @@ export { categoryCache, categoryCacheTimestamps };
 // Utility functions
 const formatString = (str) => Store.formatString(str);
 
+// Selective field population — avoids fetching unused relation data
+const FIELD_PARAMS =
+  "fields[0]=Word&fields[1]=Perkataan&fields[2]=Video&fields[3]=Tag&fields[4]=New&fields[5]=Order&fields[6]=Image_Status" +
+  "&populate[category_group][fields][0]=KumpulanKategori&populate[category_group][fields][1]=GroupCategory";
+
+const BASE_URL = "https://bimsignbank-strapi.onrender.com/api/bims";
+
 // In-flight request deduplication — prevents parallel components from
 // firing the same API call simultaneously
 const inFlightRequests = new Map();
+
+// Reusable transformer for vocab items (handles Strapi v4 nested populate)
+const transformVocabItem = (item) => {
+  const cg = item?.category_group?.data?.attributes || item?.category_group || {};
+  return {
+    kumpulanKategori: cg.KumpulanKategori || `${item.Kumpulan || ""}/${item.Kategori || ""}`,
+    groupCategory: cg.GroupCategory || `${item.Group || ""}/${item.Category || ""}`,
+    word: item.Word || '',
+    perkataan: item.Perkataan || '',
+    video: item.Video || '',
+    tag: item.Tag || '',
+    new: item.New || 'No',
+    order: item.Order || '',
+    imgStatus: item.Image_Status || ''
+  };
+};
 
 // Get categories of a group
 export const getCategoriesOfGroup = (group) => {
@@ -38,7 +61,7 @@ const normaliseParam = (str) =>
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join(' ');
 
-// Fetch vocabs by category from the static dataset
+// Fetch vocabs by category — single request from Strapi
 export const fetchVocabsByCategoryFromAPI = async (group, category) => {
   if (!group || !category) return [];
 
@@ -47,24 +70,55 @@ export const fetchVocabsByCategoryFromAPI = async (group, category) => {
     const finalCategory = normaliseParam(category);
     const groupCategoryPair = `${finalGroup}/${finalCategory}`;
 
-    console.log(
-      `Fetching vocabs from static dataset for group/category: ${groupCategoryPair}`
+    console.log(`Fetching vocabs for group/category: ${groupCategoryPair}`);
+
+    const encodedGroupCategoryPair = encodeURIComponent(groupCategoryPair);
+
+    const response = await axios.get(
+      `${BASE_URL}?${FIELD_PARAMS}&filters[category_group][GroupCategory][$eq]=${encodedGroupCategoryPair}&pagination[pageSize]=500`
     );
 
-    const allItems = await loadStaticVocabData();
+    if (!response.data?.data) {
+      console.error("Invalid API response structure:", response);
+      return [];
+    }
 
-    const filtered = allItems
-      .filter((item) => item.groupCategory === groupCategoryPair)
+    const rawData = response.data.data || [];
+    const transformedData = rawData
+      .map((entry) => transformVocabItem(entry.attributes || entry))
       .sort((a, b) => {
         const aOrder = a.order ?? Infinity;
         const bOrder = b.order ?? Infinity;
         if (aOrder !== bOrder) return aOrder - bOrder;
-        return (a.perkataan || "").localeCompare(b.perkataan || "");
+        return a.perkataan.localeCompare(b.perkataan);
       });
 
-    return filtered;
+    return transformedData;
   } catch (error) {
     console.error("Error fetching vocabs by category:", error);
+    return [];
+  }
+};
+
+// Fetch new signs — single targeted request from Strapi
+export const fetchNewSignsFromAPI = async () => {
+  try {
+    console.log("Fetching new signs");
+
+    const response = await axios.get(
+      `${BASE_URL}?${FIELD_PARAMS}&filters[New][$eq]=Yes&pagination[pageSize]=200`
+    );
+
+    if (!response.data?.data) {
+      console.error('Invalid API response structure:', response);
+      return [];
+    }
+
+    return (response.data.data || []).map((entry) =>
+      transformVocabItem(entry.attributes || entry)
+    );
+  } catch (error) {
+    console.error("Error fetching new signs:", error);
     return [];
   }
 };
@@ -138,12 +192,8 @@ export const getNewSigns = async () => {
   }
 
   try {
-    console.log("Cache miss for new signs, reading from static dataset");
-    const allItems = await loadStaticVocabData();
-
-    const newSigns = allItems.filter(
-      (item) => (item.new || "").toLowerCase() === "yes"
-    );
+    console.log("Cache miss for new signs, fetching from API");
+    const newSigns = await fetchNewSignsFromAPI();
 
     categoryCache.set(cacheKey, newSigns);
     categoryCacheTimestamps.set(cacheKey, now);

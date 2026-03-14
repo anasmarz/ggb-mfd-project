@@ -1,7 +1,7 @@
+import axios from "axios";
 import cookies from "js-cookie";
 import { Store } from "../../flux";
 import { getNewSigns } from './alphabetAPI';
-import { loadStaticVocabData } from "./staticVocabClient";
 
 // Utility function to format strings
 const formatString = (str) => Store.formatString(str);
@@ -9,38 +9,44 @@ const formatString = (str) => Store.formatString(str);
 // Get current locale setting from cookies (default to English)
 const getCurrentLocale = () => cookies.get("i18next") || "en";
 
-// Cache variables derived from the static vocab dataset
+// Cache variables to avoid redundant API calls
 let categoryCache = null;
 let groupCache = null;
 
-// Derive category-group data from the static vocab dataset
-const loadCategoryDataFromStatic = async () => {
+// Selective field population for category-groups — only the two fields we need
+const CATEGORY_GROUP_URL =
+  "https://bimsignbank-strapi.onrender.com/api/category-groups" +
+  "?fields[0]=KumpulanKategori&fields[1]=GroupCategory&fields[2]=Remark" +
+  "&pagination[pageSize]=200&filters[Remark][$ne]=Unpublished";
+
+// Fetches all category data from the API in a single request
+const fetchCategoryData = async () => {
   if (categoryCache) return categoryCache;
 
-  const allItems = await loadStaticVocabData();
+  try {
+    const response = await axios.get(CATEGORY_GROUP_URL);
 
-  const mapped = allItems
-    .filter((item) => {
-      const kk = (item.kumpulanKategori || "").toString().trim();
-      const gc = (item.groupCategory || "").toString().trim();
+    if (!response.data?.data) {
+      console.error("Invalid API response structure:", response);
+      return [];
+    }
 
-      // Must have both values
-      if (!kk || !gc) return false;
+    const rawData = response.data.data || [];
+    const transformedData = rawData.map((entry) => {
+      const item = entry.attributes || entry;
+      return {
+        KumpulanKategori: item.KumpulanKategori || "",
+        GroupCategory: item.GroupCategory || "",
+        Remark: item.Remark || "",
+      };
+    });
 
-      // Skip obviously invalid placeholders like "/" or lacking the expected "Group/Category" structure
-      if (kk === "/" || gc === "/") return false;
-      if (!kk.includes("/") || !gc.includes("/")) return false;
-
-      return true;
-    })
-    .map((item) => ({
-      KumpulanKategori: item.kumpulanKategori,
-      GroupCategory: item.groupCategory,
-      Remark: null,
-    }));
-
-  categoryCache = mapped;
-  return mapped;
+    categoryCache = transformedData;
+    return transformedData;
+  } catch (err) {
+    console.error("Error fetching category data:", err);
+    return [];
+  }
 };
 
 // Processes raw category data to extract unique group entries
@@ -101,7 +107,7 @@ const restructureJSONGroup = (data) => {
 export const getGroupList = async () => {
   if (groupCache) return groupCache;
 
-  const data = await loadCategoryDataFromStatic();
+  const data = await fetchCategoryData();
   const reconData = restructureJSONGroup(data);
   groupCache = reconData;
   return reconData;
@@ -133,7 +139,7 @@ export const getGroupItems = async () => {
 // Return groups and categories pairs (unique)
 const getCategoryItems = async () => {
   try {
-    const categoryData = await loadCategoryDataFromStatic();
+    const categoryData = await fetchCategoryData();
 
     if (!categoryData?.length) {
       console.warn("No category data available");
@@ -213,7 +219,7 @@ export const getCategoriesOfGroup = async (lang = "ms") => {
 
 // Return the total number of category records fetched
 export const getCategoryLength = async () => {
-  const data = await loadCategoryDataFromStatic();
+  const data = await fetchCategoryData();
   return data.length;
 };
 
