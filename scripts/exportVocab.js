@@ -7,9 +7,9 @@ const STRAPI_BASE_URL =
   process.env.STRAPI_BASE_URL ||
   "https://bimsignbank-strapi.onrender.com/api/bims";
 
-// Query parameters to match the fields used in the frontend
+// Query parameters to match the fields used in the frontend.
 const FIELD_PARAMS =
-  "fields[0]=Word&fields[1]=Perkataan&fields[2]=Video&fields[3]=Tag&fields[4]=New&fields[5]=Order&fields[6]=Image_Status" +
+  "fields[0]=Word&fields[1]=Perkataan&fields[2]=Video&fields[3]=Tag&fields[4]=New&fields[5]=Order&fields[6]=Image_Status&fields[7]=Video_Status" +
   "&populate[category_group][fields][0]=KumpulanKategori&populate[category_group][fields][1]=GroupCategory";
 
 // Transform a raw Strapi item into the app's vocab shape
@@ -65,7 +65,12 @@ const buildSearchIndex = (items) =>
 
 async function exportVocab() {
   try {
-    const pageSize = Number(process.env.VOCAB_PAGE_SIZE) || 1000;
+    // Cap at 100: Strapi uses offset = (page - 1) * pageSize. If pageSize is larger than
+    // api.rest.maxLimit, responses are still capped (e.g. 100 rows) but the next page skips gaps.
+    const pageSize = Math.min(
+      Number(process.env.VOCAB_PAGE_SIZE) || 100,
+      100
+    );
     let page = 1;
     let pageCount = 1;
     const rawItems = [];
